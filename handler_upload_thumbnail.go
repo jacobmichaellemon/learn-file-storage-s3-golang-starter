@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
@@ -34,7 +36,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
 	const maxMemory int64 = 10 << 20
 	r.ParseMultipartForm(maxMemory)
 	file, header, err := r.FormFile("thumbnail")
@@ -46,8 +47,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	mType := header.Header.Get("Content-Type")
 	mimeType, _, err := mime.ParseMediaType(mType)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to parse media type", err)
+	if err != nil || mimeType != "image/jpeg" && mimeType != "image/png" {
+		respondWithError(w, http.StatusInternalServerError, "error parsing media type", err)
 		return
 	}
 	extensions, err := mime.ExtensionsByType(mimeType)
@@ -61,7 +62,11 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	fileStorageLocation := filepath.Join(cfg.assetsRoot, videoIDString)
+	key := make([]byte, 32)
+	rand.Read(key)
+	base64String := base64.RawURLEncoding.EncodeToString(key)
+
+	fileStorageLocation := filepath.Join(cfg.assetsRoot, base64String)
 	fileStorageLocation = fileStorageLocation + extensions[0]
 	thumbnailFile, err := os.Create(fileStorageLocation)
 	if err != nil {
