@@ -58,7 +58,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "not users video", err)
+		respondWithError(w, http.StatusUnauthorized, "error fetching video metadata", err)
 		return
 	}
 
