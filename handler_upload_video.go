@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -47,6 +51,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	fmt.Println("uploading video", videoID, "by user", userID)
+
 	r.ParseMultipartForm(maxMemory)
 	file, header, err := r.FormFile("video")
 	if err != nil {
@@ -68,17 +74,26 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	defer os.Remove(tempFile.Name())
 	defer tempFile.Close()
 	io.Copy(tempFile, file)
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	aspectRatioPrefix := ""
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error getting video aspect ratio", err)
+		return
+	}
+	switch aspectRatio {
+	case "16:9":
+		aspectRatioPrefix = "landscape/"
+	case "9:16":
+		aspectRatioPrefix = "portrait/"
+	default:
+		aspectRatioPrefix = "other/"
+	}
 	tempFile.Seek(0, io.SeekStart)
 	key := make([]byte, 32)
 	rand.Read(key)
 	base64String := base64.RawURLEncoding.EncodeToString(key)
-	keyString := base64String + ".mp4"
-	s3Obj, err := cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{Bucket: &cfg.s3Bucket, Key: &keyString, Body: tempFile, ContentType: &mimeType})
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "error uploading to s3", err)
-		return
-	}
-	fmt.Printf("S3 object of size: %d uploaded", s3Obj.Size)
+	keyString := aspectRatioPrefix + base64String + ".mp4"
+	cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{Bucket: &cfg.s3Bucket, Key: &keyString, Body: tempFile, ContentType: &mimeType})
 	vidUrl := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, keyString)
 	video.VideoURL = &vidUrl
 	err = cfg.db.UpdateVideo(video)
@@ -87,4 +102,42 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	respondWithJSON(w, http.StatusOK, video)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	type Stream struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	}
+	type FFprobeOutput struct {
+		Streams []Stream `json:"streams"`
+	}
+
+	aspectRatioCommand := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	var output bytes.Buffer
+	aspectRatioCommand.Stdout = &output
+	err := aspectRatioCommand.Run()
+	if err != nil {
+		return "", err
+	}
+
+	data := FFprobeOutput{}
+	err = json.Unmarshal(output.Bytes(), &data)
+
+	if err != nil {
+		return "", err
+	}
+
+	ratio := float64(data.Streams[0].Width) / float64(data.Streams[0].Height)
+	portrait := 9.0 / 16.0
+	landscape := 16.0 / 9.0
+
+	if math.Abs(ratio-landscape) < 0.05 {
+		return "16:9", nil
+	} else if math.Abs(ratio-portrait) < 0.05 {
+		return "9:16", nil
+	} else {
+		return "other", nil
+	}
+
 }
